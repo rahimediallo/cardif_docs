@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>com.bnppa.ic.config</groupId>
+		<artifactId>pom-global</artifactId>
+		<version>4.2.2</version>
+	</parent>
+
+	<groupId>com.bnpparibas.cardif</groupId>
+	<artifactId>integration-file-batch</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+
+	<distributionManagement>
+		<repository>
+			<id>BNPPA_REF</id><!-- this id must exist in your [MAVEN_HOME]/conf/settings.xml/servers/server -->
+			<name>Release Repository</name>
+			<url>${repo.internal.deploy.url}/BNPPA_REF</url>
+		</repository>
+
+		<snapshotRepository>
+			<id>BNPPA_SNAPSHOT</id><!-- this id must exist in your [MAVEN_HOME]/conf/settings.xml/servers/server -->
+			<name>Snapshot Repository</name>
+			<url>${repo.snapshot.deploy.url}/BNPPA_SNAPSHOT</url>
+		</snapshotRepository>
+	</distributionManagement>
+
+	<properties>
+		<!-- Enable unit Test : please do not disable unit tests -->
+		<test.junit.skip>false</test.junit.skip>
+
+		<!-- COMPILER -->
+		<jdk.home>${jdk.jse8-x64.sun.home}</jdk.home>
+		<jdk.compiler.compilerVersion>1.8</jdk.compiler.compilerVersion>
+		<maven.compiler.source>${jdk.compiler.compilerVersion}</maven.compiler.source>
+		<maven.compiler.target>${maven.compiler.source}</maven.compiler.target>
+
+		<!-- Encoding -->
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+		<!-- application-properties encoding -->
+		<application-properties.version>1.11</application-properties.version>
+
+		<!-- DB jar version -->
+		<oracle.version>11.2.0.4</oracle.version>
+		<bonecp.version>0.8.0.RELEASE</bonecp.version>
+
+		<!-- Spring Boot Version -->
+		<!-- Check versions here http://central.maven.org/maven2/org/springframework/boot/spring-boot-dependencies/2.0.0.RELEASE/spring-boot-dependencies-2.0.0.RELEASE.pom -->
+		<spring-boot.version>2.1.2.RELEASE</spring-boot.version>
+
+		<!-- checkstyle : We strongly advise to keep it -->
+		<checkstyle.version>2.9</checkstyle.version>
+		<checkstyle.directory>./checkstyle.xml</checkstyle.directory>
+
+		<!-- Test jar version -->
+		<mockito.version>1.10.19</mockito.version>
+
+		<org.mapstruct.version>1.2.0.Final</org.mapstruct.version>
+
+		<sonar.core.codeCoveragePlugin>jacoco</sonar.core.codeCoveragePlugin>
+		<sonar.dynamicAnalysis>true</sonar.dynamicAnalysis>
+	</properties>
+
+	<scm>
+		<url>https://cip-gitlab-assurance.is.echonet/AP06578/java.batch-archetype.git</url>
+		<connection>scm:git:git:the-url-to-your-repo-git.git</connection>
+		<developerConnection>scm:git:git@the-url-to-your-repo-git.git</developerConnection>
+	</scm>
+
+	<dependencies>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- Logger dependencies -->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<scope>compile</scope>
+		</dependency>
+	</dependencies>
+
+	<dependencyManagement>
+		<dependencies>
+			<!-- Spring Boot Dependencies -->
+			<dependency>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-starter-parent</artifactId>
+				<version>${spring-boot.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-starter-integration</artifactId>
+				<version>${spring-boot.version}</version>
+			</dependency>
+
+			<dependency>
+				<groupId>org.springframework.integration</groupId>
+				<artifactId>spring-integration-file</artifactId>
+				<version>5.1.2.RELEASE</version>
+			</dependency>
+
+			<dependency>
+				<groupId>org.springframework.batch</groupId>
+				<artifactId>spring-batch-integration</artifactId>
+				<version>4.1.1.RELEASE</version>
+			</dependency>
+			<!-- Current project dependencies -->
+			<dependency>
+				<groupId>${project.groupId}</groupId>
+				<artifactId>integration-file-batch-common</artifactId>
+				<version>0.0.1-SNAPSHOT</version>
+			</dependency>
+
+			<dependency>
+				<groupId>${project.groupId}</groupId>
+				<artifactId>integration-file-batch-domain</artifactId>
+				<version>0.0.1-SNAPSHOT</version>
+			</dependency>
+			<dependency>
+				<groupId>${project.groupId}</groupId>
+				<artifactId>integration-file-batch-services</artifactId>
+				<version>0.0.1-SNAPSHOT</version>
+			</dependency>
+			<dependency>
+				<groupId>${project.groupId}</groupId>
+				<artifactId>integration-file-batch-application</artifactId>
+				<version>0.0.1-SNAPSHOT</version>
+			</dependency>
+
+			<!-- Database dependency -->
+			<dependency>
+				<groupId>com.oracle</groupId>
+				<artifactId>ojdbc6</artifactId>
+				<version>${oracle.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.jolbox</groupId>
+				<artifactId>bonecp</artifactId>
+				<version>${bonecp.version}</version>
+			</dependency>
+
+			<!-- Test unitaire -->
+			<dependency>
+				<groupId>org.mockito</groupId>
+				<artifactId>mockito-all</artifactId>
+				<version>${mockito.version}</version>
+			</dependency>
+
+			<dependency>
+				<groupId>org.mapstruct</groupId>
+				<artifactId>mapstruct</artifactId> <!-- use mapstruct-jdk8 for Java 8 or higher -->
+				<version>${org.mapstruct.version}</version>
+			</dependency>
+			
+			<!-- Jasperreport -->
+			<dependency>
+				<groupId>net.sf.jasperreports</groupId>
+				<artifactId>jasperreports</artifactId> <!-- bliotheque pour jasperreport r -->
+				<version>6.0.0</version>
+			</dependency>
+			<!-- ical4j -->
+			<dependency>
+   			 	 <groupId>org.mnode.ical4j</groupId>
+  			 	 <artifactId>ical4j</artifactId>
+  				 <version>3.0.6</version>
+			</dependency>
+			
+			 
+		</dependencies>
+	</dependencyManagement>
+
+	<profiles>
+		<profile>
+			<id>sonar</id>
+			<activation>
+				<activeByDefault>true</activeByDefault>
+			</activation>
+			<properties>
+				<sonar.host.url>http://localhost/sonar</sonar.host.url>
+			</properties>
+		</profile>
+	</profiles>
+
+	<build>
+		<finalName>${project.artifactId}-${project.version}</finalName>
+		<sourceDirectory>src/main/java</sourceDirectory>
+		<testSourceDirectory>src/test/java</testSourceDirectory>
+
+		<resources>
+			<resource>
+				<directory>src/main/resources</directory>
+				<filtering>true</filtering>
+			</resource>
+		</resources>
+		<testResources>
+			<testResource>
+				<directory>src/test/resources</directory>
+				<filtering>true</filtering>
+			</testResource>
+		</testResources>
+
+		<pluginManagement>
+			<plugins>
+				<!-- Release -->
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-release-plugin</artifactId>
+					<version>2.5.3</version>
+				</plugin>
+
+				<!-- Quality plugins -->
+				<plugin>
+					<groupId>org.codehaus.mojo</groupId>
+					<artifactId>sonar-maven-plugin</artifactId>
+					<version>2.7.1</version>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-checkstyle-plugin</artifactId>
+					<version>${checkstyle.version}</version>
+				</plugin>
+				<plugin>
+					<groupId>org.jacoco</groupId>
+					<artifactId>jacoco-maven-plugin</artifactId>
+					<version>0.7.8</version>
+					<executions>
+						<execution>
+							<id>prepare-agent</id>
+							<goals>
+								<goal>prepare-agent</goal>
+							</goals>
+						</execution>
+						<execution>
+							<id>report</id>
+							<phase>prepare-package</phase>
+							<goals>
+								<goal>report</goal>
+							</goals>
+						</execution>
+					</executions>
+				</plugin>
+				<plugin>
+					<groupId>org.codehaus.mojo</groupId>
+					<artifactId>findbugs-maven-plugin</artifactId>
+					<version>3.0.4</version>
+				</plugin>
+			</plugins>
+		</pluginManagement>
+
+	</build>
+  <modules>
+    <module>integration-file-batch-common</module>
+    <module>integration-file-batch-domain</module>
+    <module>integration-file-batch-services</module>
+    <module>integration-file-batch-application</module>
+  </modules>
+</project>
