@@ -1,0 +1,765 @@
+package websphere
+
+//noinspection GroovyAssignabilityCheck
+pipeline {
+    agent any
+
+    environment {
+        WORKSPACE = pwd()
+
+        jdks = " -Djdk.jse7.sun.home=${tool 'jdk7-x64-linux-1.7.0_79'} " +
+                "-Djdk.jse7-x64.sun.home=${tool 'jdk7-x64-linux-1.7.0_79'} " +
+                "-Djdk.jse8-x64.sun.home=${tool 'jdk8-x64-linux-1.8.0_73'} "
+        charAtReplacement = "__"
+        charSlashReplacement = "__"
+        dontCallDM = "Don't create a Delivery Manager demand"
+        callDMWithDeploy = "Create a Delivery Manager demand and deploy it"
+        profile = ""
+    }
+
+    stages {
+        stage('Initialization') {
+            steps {
+                script {
+                    creatorUid = ""
+                    isAutoBuild = false
+                    wrap([$class: 'BuildUser']) {
+                        try {
+                            echo "Job started by an user, ID: ${BUILD_USER_ID} (used to call DM as creatordUid)" +
+                                    ", name : ${BUILD_USER}, e-mail : ${BUILD_USER_EMAIL}"
+                            creatorUid = "${BUILD_USER_ID}"
+                            creatorName = "${BUILD_USER} <${BUILD_USER_EMAIL}>"
+                        } catch (err) {
+                            echo "Job not started by an user, Primary owner ID: ${ownership.job.primaryOwnerId} (used to call DM as creatordUid)" +
+                                    ", e-mail : ${ownership.job.primaryOwnerEmail}"
+                            creatorUid = ownership.job.primaryOwnerId
+                            creatorName = creatorUid + " <${ownership.job.primaryOwnerEmail}>"
+                            isAutoBuild = true
+                        }
+                    }
+
+                    echo "isAutoBuild mode " + isAutoBuild
+                    if (isAutoBuild) {
+                        if (JOB_PURPOSE != "CAST_ANALYSIS" && JOB_PURPOSE != "BUILD_ONLY") {
+                            JOB_PURPOSE = "SNAPSHOT"
+                            echo "JOB_PURPOSE is force to " + JOB_PURPOSE + " for isAutoBuild mode " + isAutoBuild
+                        }
+                    }
+
+                    isDebug = false
+                    try {
+                        isDebug = (IS_DEBUG_MODE == "true")
+                        echo "IS_DEBUG_MODE is " + isDebug
+                    } catch (err) {
+                        // Nothing to do
+                    }
+
+                    noSonar = false
+                    try {
+                        noSonar = (NO_SONAR == "true")
+                        echo "NO_SONAR is " + noSonar
+                    } catch (err) {
+                        // Nothing to do
+                    }
+
+                    mvn_option = ""
+                    try {
+                        mvn_option = "${MVN_OPTION}"
+                        echo "MVN_OPTION is " + mvn_option
+                    } catch (err) {
+                        // Nothing to do
+                    }
+
+                    // Check mandatory parameters
+                    def missingParameter = "parameter need to be selected\n"
+                    def errorOnParameter = ""
+
+                    try {
+                        if (JOB_PURPOSE.isEmpty() ||
+                                (JOB_PURPOSE != "SNAPSHOT" &&
+                                        JOB_PURPOSE != "RELEASE" &&
+                                        JOB_PURPOSE != "BUILD_ONLY" &&
+                                        JOB_PURPOSE != "CAST_ANALYSIS")) {
+                            errorOnParameter += "JOB_PURPOSE has a wrong value (" + JOB_PURPOSE + "), only available : [SNAPSHOT, RELEASE, BUILD_ONLY]"
+                        }
+                    } catch (err) {
+                        errorOnParameter += "JOB_PURPOSE " + missingParameter
+                    }
+
+                    try {
+                        if (JOB_FOR.isEmpty() ||
+                                (JOB_FOR != "WAS" &&
+                                        JOB_FOR != "Liferay" &&
+                                        JOB_FOR != "LivApp" )) {
+                            errorOnParameter += "JOB_FOR has a wrong value (" + JOB_FOR + "), only available : [WAS, Liferay, LivApp]"
+                        }
+                    } catch (err) {
+                        errorOnParameter += "JOB_FOR " + missingParameter
+                    }
+
+                    try {
+                        if (GIT_SOURCES.isEmpty()) {
+                            errorOnParameter += "GIT_SOURCES " + missingParameter
+                        } else {
+                            // Get ARTIFACT_ID list and process
+                            projectAndBranch = "${GIT_SOURCES}".split('\n')
+                            HashSet<String> uniqueValues = new HashSet<String>()
+                            HashSet<String> duplicateValues = new HashSet<String>()
+                            for (i = 0; i < projectAndBranch.size(); i++) {
+                                if (isDebug) {
+                                    echo "DEBUG : projectAndBranch[" + i + "]=" + projectAndBranch[i]
+                                }
+                                projectAndBranch[i] = projectAndBranch[i].trim()
+                                // Check GIT_SOURCES value
+                                if (!(projectAndBranch[i] ==~ /^(?!\/).+(?<!\.git)/)) {
+                                    errorOnParameter += "GIT_SOURCES value is wrong for line " + i + ":'" +
+                                            projectAndBranch[i] + "', need to be 'GROUP/technology.project'\n"
+                                }
+                                if (!uniqueValues.add(projectAndBranch[i].split('@')[0])) {
+                                    duplicateValues.add(projectAndBranch[i].split('@')[0])
+                                }
+                            }
+                            if (duplicateValues.size() != 0) {
+                                errorOnParameter += "GIT_SOURCES has duplicate project, " +
+                                        "please check and make the correction for " +
+                                        duplicateValues + "\n"
+                            }
+                        }
+                    } catch (err) {
+                        errorOnParameter += "GIT_SOURCES " + missingParameter
+                    }
+
+                    try {
+                        if (MVN_VERSION.isEmpty()) {
+                            errorOnParameter += "MVN_VERSION " + missingParameter
+                        }
+                    } catch (err) {
+                        errorOnParameter += "MVN_VERSION " + missingParameter
+                    }
+
+                    if (!isAutoBuild) {
+                        try {
+                            if (GITLAB_PWD.isEmpty()) {
+                                errorOnParameter += "GITLAB_PWD " + missingParameter
+                            } else if (GITLAB_PWD == "DELIVERY_MANAGER_MAVEN_PLUGIN_ACCESS" ||
+                                    GITLAB_PWD == "JENKINS_GITLAB_READ-ONLY" ||
+                                    GITLAB_PWD == "JENKINS_NEXUS_SNAPSHOT") {
+                                errorOnParameter += "GITLAB_PWD " + "forbidden value : {JENKINS_GITLAB_READ," +
+                                        "JENKINS_NEXUS_SNAPSHOT," +
+                                        "DELIVERY_MANAGER_MAVEN_PLUGIN_ACCESS}\n"
+                            }
+                        } catch (err) {
+                            errorOnParameter += "GITLAB_PWD " + missingParameter
+                        }
+                    }
+
+                    try {
+                        if (!isAutoBuild &&
+                                USER_MVN_SETTINGS.isEmpty()) {
+                            errorOnParameter += "USER_MVN_SETTINGS " + missingParameter
+                        }
+                    } catch (err) {
+                        errorOnParameter += "USER_MVN_SETTINGS " + missingParameter
+                    }
+
+                    if (JOB_PURPOSE != "CAST_ANALYSIS") {
+                        try {
+                            if (DELIVERY_MANAGER.isEmpty()) {
+                                errorOnParameter += "DELIVERY_MANAGER " + missingParameter
+                            } else {
+                                if (DELIVERY_MANAGER != dontCallDM) {
+                                    try {
+                                        def environnementEnum = [:]
+                                        environnementEnum['Development'] = "Développement"
+                                        environnementEnum['Continuous Integration'] = "IC"
+                                        environnementEnum['Integration'] = "Intégration"
+//                                    environnementEnum['Homologation'] = "Homologation"
+//                                    environnementEnum['Pre-Production'] = "Pré-production"
+//                                    environnementEnum['Production'] = "Production"
+
+                                        environnement = ""
+                                        if (DM_ENVIRONMENT.isEmpty()) {
+                                            errorOnParameter += "DM_ENVIRONMENT " + missingParameter
+                                        } else {
+                                            environnement = environnementEnum[DM_ENVIRONMENT]
+                                            if (isDebug) {
+                                                echo "DEBUG : environnementEnum[" + DM_ENVIRONMENT + "] = " + environnement
+                                            }
+                                        }
+                                    } catch (err) {
+                                        errorOnParameter += "DM_ENVIRONMENT " + missingParameter
+                                    }
+
+                                    try {
+                                        envConf = ""
+                                        if (DM_LANE.isEmpty()) {
+                                            errorOnParameter += "DM_LANE " + missingParameter
+                                        } else {
+                                            envConf = DM_LANE
+                                        }
+                                    } catch (err) {
+                                        errorOnParameter += "DM_LANE " + missingParameter
+                                    }
+
+                                    try {
+                                        wisProject = ""
+                                        if (DM_PROJECT.isEmpty()) {
+                                            errorOnParameter += "DM_PROJECT " + missingParameter
+                                        } else {
+                                            wisProject = DM_PROJECT
+                                        }
+                                    } catch (err) {
+                                        errorOnParameter += "DM_PROJECT " + missingParameter
+                                    }
+
+                                    try {
+                                        wisList = ""
+                                        if (DM_FMEO.isEmpty()) {
+                                            errorOnParameter += "DM_FMEO " + missingParameter
+                                        } else {
+                                            if (!(DM_FMEO ==~ /[a-zA-Z0-9_\- \.]+(\\/[a-zA-Z0-9_\- \.]+)?/)) {
+                                                errorOnParameter += "DM_FMEO doesn't respect " +
+                                                        "[a-zA-Z0-9_\\- \\.]+(/[a-zA-Z0-9_\\- \\.]+)? (only 2 FMEOs) : '" +
+                                                        DM_FMEO + "'\n"
+                                            }
+                                            wisList = DM_FMEO
+                                        }
+                                    } catch (err) {
+                                        errorOnParameter += "DM_FMEO " + missingParameter
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            errorOnParameter += "DELIVERY_MANAGER " + missingParameter
+                        }
+                    }
+
+                    mavenVersionNotCorrect = " doesn't respect #.#.#-#"
+
+                    releaseVersion = ""
+                    try {
+                        releaseVersion = "${RELEASE_VERSION}"
+                        if (!releaseVersion.isEmpty() && !(releaseVersion ==~ /([0-9]+\.)+[0-9]+\-[0-9]+/)) {
+                            releaseVersion = "${RELEASE_VERSION}"
+                            errorOnParameter += "RELEASE_VERSION" + mavenVersionNotCorrect +
+                                    " (" + releaseVersion + ")\n"
+                        }
+                        echo "RELEASE_VERSION is " + releaseVersion
+                    } catch (err) {
+                        // Nothing to do
+                    }
+
+                    newSnapshotVersion = ""
+                    try {
+                        newSnapshotVersion = "${NEW_SNAPSHOT_VERSION}"
+                        if (!newSnapshotVersion.isEmpty() &&
+                                !(newSnapshotVersion ==~ /([0-9]+\.)+[0-9]+\-[0-9]+\-SNAPSHOT/)) {
+                            errorOnParameter += "NEW_SNAPSHOT_VERSION" + mavenVersionNotCorrect + "-SNAPSHOT" +
+                                    " (" + newSnapshotVersion + ")\n"
+                        }
+                        echo "NEW_SNAPSHOT_VERSION is " + newSnapshotVersion
+                    } catch (err) {
+                        // Nothing to do
+                    }
+
+                    if (JOB_PURPOSE == "CAST_ANALYSIS") {
+                        codeAP = ""
+                        for (i = 0; i < projectAndBranch.size(); i++) {
+                            if (!codeAP.isEmpty()) {
+                                if (codeAP != projectAndBranch[i].split('/')[0]) {
+                                    errorOnParameter += "Code AP is not the same for all repositories : " +
+                                            projectAndBranch
+                                }
+                            } else {
+                                codeAP = projectAndBranch[i].split('/')[0]
+                            }
+                        }
+                    }
+
+                    if (!errorOnParameter.isEmpty()) {
+                        currentBuild.result = 'FAILURE'
+                        error errorOnParameter
+                    }
+                    artifactsListToDeploy = ""
+                }
+            }
+        }
+
+        stage('Checkout from Git and check SNAPSHOT in version') {
+            steps {
+                script {
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+
+                        echo 'Checkout from Git and check SNAPSHOT in version (' + projectAndBranch[i] + ')'
+
+                        def packageName = ''
+
+                        dir("${env.WORKSPACE}/" + projectAndBranch[i].split('/')[0] + "/" +
+                                projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement)) {
+
+                            branch = "master"
+                            if (projectAndBranch[i].contains("@") &&
+                                    !projectAndBranch[i].contains("@master") &&
+                                    !projectAndBranch[i].contains("@MASTER")) {
+                                branch = projectAndBranch[i].split('@')[1]
+                            }
+
+                            if (isDebug) {
+                                echo "DEBUG : isAutoBuild is " + isAutoBuild
+                            }
+                            // use JENKINS_GITLAB_READ-ONLY for isAutoBuild=true only
+                            if (isAutoBuild) {
+                                dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" + projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                        "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+                                    git branch: branch, credentialsId: 'JENKINS_GITLAB_READ-ONLY',
+                                            url: "https://cip-gitlab-assurance.is.echonet" + "/" +
+                                                    projectAndBranch[i].split('@')[0] + ".git"
+                                }
+                            } else {
+                                // TODO try to parameterize the credentialsId to avoid code duplication
+                                //noinspection GroovyAssignabilityCheck
+                                withCredentials([[$class          : 'UsernamePasswordMultiBinding',
+                                                  credentialsId   : '${GITLAB_PWD}',
+                                                  usernameVariable: 'GIT_USERNAME',
+                                                  passwordVariable: 'GIT_PASSWORD']]) {
+
+                                    if (isDebug) {
+                                        echo "DEBUG : remoteUrl is " +
+                                                "https://cip-gitlab-assurance.is.echonet".replace("https://", "https://" +
+                                                        GIT_USERNAME +
+                                                        ":" + GIT_PASSWORD + "@") +
+                                                "/" + projectAndBranch[i]
+                                    }
+
+                                    if (!projectAndBranch[i].contains("@") ||
+                                            projectAndBranch[i].contains("@master") ||
+                                            projectAndBranch[i].contains("@MASTER")) {
+                                        sh "#!/bin/sh -e\n" + "git clone " +
+                                                "https://cip-gitlab-assurance.is.echonet".replace("https://", "https://" +
+                                                        URLEncoder.encode(GIT_USERNAME, "UTF-8") +
+                                                        ":" + URLEncoder.encode(GIT_PASSWORD, "UTF-8") + "@") +
+                                                "/" + projectAndBranch[i].split('@')[0] + ".git"
+                                    } else {
+                                        sh "#!/bin/sh -e\n" + "git clone " +
+                                                "https://cip-gitlab-assurance.is.echonet".replace("https://", "https://" +
+                                                        URLEncoder.encode(GIT_USERNAME, "UTF-8") +
+                                                        ":" + URLEncoder.encode(GIT_PASSWORD, "UTF-8") + "@") +
+                                                "/" + projectAndBranch[i].split('@')[0] + ".git" +
+                                                " -b " + projectAndBranch[i].split('@')[1]
+                                    }
+                                }
+                            }
+                        }
+
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" + projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+                            def pom = readMavenPom file: "pom.xml"
+
+                            if (!pom.version.contains("-SNAPSHOT")) {
+                                currentBuild.result = 'FAILURE'
+                                error projectAndBranch[i] + " is not a -SNAPSHOT version"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Upgrade project version (only for release)') {
+            when {
+                expression {
+                    JOB_PURPOSE == "RELEASE"
+                }
+            }
+            steps {
+                script {
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                                projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+
+                            withMaven(maven: 'default-maven',
+                                    jdk: 'default-jdk') {
+                                def pom = readMavenPom file: "pom.xml"
+
+                                if (isDebug) {
+                                    echo "DEBUG : RELEASE_VERSION is defined to " + releaseVersion
+                                }
+
+                                if (releaseVersion.isEmpty()) {
+                                    releaseVersion = pom.version.split("-SNAPSHOT")[0]
+                                    echo "RELEASE_VERSION is not defined, automatic release to : " + releaseVersion
+                                }
+
+                                sh "mvn org.codehaus.mojo:versions-maven-plugin:2.3:set -DnewVersion=" + releaseVersion
+                                sh "mvn org.codehaus.mojo:versions-maven-plugin:2.3:commit"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Maven compilation') {
+            when {
+                expression {
+                    JOB_PURPOSE == "BUILD_ONLY" ||
+                            JOB_PURPOSE == "CAST_ANALYSIS"
+                }
+            }
+            steps {
+                script {
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" + projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+                            withMaven(maven: 'default-maven',
+                                    jdk: 'default-jdk') {
+                                if (isDebug) {
+                                    echo "DEBUG : mvn clean install org.jacoco:jacoco-maven-plugin:prepare-agent $jdks $mvn_option"
+                                }
+                                sh "mvn clean verify org.jacoco:jacoco-maven-plugin:prepare-agent $jdks $mvn_option"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Commit and create tag new version (only for release)') {
+            when {
+                expression {
+                    JOB_PURPOSE == "RELEASE"
+                }
+            }
+            steps {
+                script {
+
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                                projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+
+
+                            try {
+                                sh 'git add pom.xml'
+                            } catch (err) {
+                                // Nothing to do
+                            }
+                            try {
+                                sh 'git add **/pom.xml'
+                            } catch (err) {
+                                // Nothing to do
+                            }
+
+                            sh 'git status'
+                            sh "git commit -m 'Jenkins CI : Maven version upgrade to release $releaseVersion " +
+                                    (isAutoBuild ? "(build auto)" : "") +
+                                    "'" + " --author \"" + creatorName + "\""
+                            sh "git tag -a $releaseVersion -m 'Jenkins CI : release $releaseVersion " +
+                                    " Author " + creatorName + (isAutoBuild ? " (build auto)" : "") + "'"
+
+                            if (isDebug) {
+                                remoteUrl = sh(script: 'git ls-remote --get-url', returnStdout: true)
+                                //WARNING this log show password
+                                //echo "DEBUG : remoteUrl is " + remoteUrl
+                            }
+
+                            // push commits and tag only if no error after build and deploy to nexus (next stage/step)
+                            //sh 'git push'
+                            //sh "git push origin $releaseVersion "
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Mvn deploy to Nexus (bin + sources)') {
+            when {
+                expression {
+                    JOB_PURPOSE == "RELEASE" || JOB_PURPOSE == "SNAPSHOT"
+                }
+            }
+            steps {
+                script {
+                    echo "Cleaning artifactsListToDeploy for artifacts Release version"
+                    artifactsListToDeploy = ""
+
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                                projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+
+                            if (JOB_FOR == "Liferay") {
+                                profile = " -P mf-war"
+                            } else {
+                                profile = ""
+                            }
+
+                            if (!isAutoBuild) {
+                                //noinspection GroovyAssignabilityCheck
+                                withCredentials([file(credentialsId: '${USER_MVN_SETTINGS}', variable: 'MVN_SETTINGS_FILE')]) {
+                                    if (isDebug) {
+                                        echo 'DEBUG : mavenSettingsFilePath use $MVN_SETTINGS_FILE'
+                                    } 
+                                    withMaven(maven: "${MVN_VERSION}",
+                                            jdk: 'default-jdk',
+                                            mavenSettingsFilePath: "${MVN_SETTINGS_FILE}") {
+                                        if (isDebug) {
+                                            echo 'DEBUG : for RELEASE, mvn clean deploy org.jacoco:jacoco-maven-plugin:prepare-agent $jdks $profile $mvn_option'
+                                        }
+                                        sh "mvn clean deploy org.jacoco:jacoco-maven-plugin:prepare-agent $jdks $profile $mvn_option"
+                                    }
+                                }
+                            } else {
+                                withMaven(maven: "${MVN_VERSION}",
+                                        jdk: 'default-jdk',
+                                        mavenSettingsConfig: 'GLOBAL_MVN_SETTINGS') {
+                                    if (isDebug) {
+                                        echo 'DEBUG : for SNAPSHOT, mvn clean deploy org.jacoco:jacoco-maven-plugin:prepare-agent $jdks $profile $mvn_option'
+                                    }
+                                    sh "mvn clean deploy org.jacoco:jacoco-maven-plugin:prepare-agent $jdks $profile $mvn_option"
+                                }
+                            }
+
+                            echo 'Rescanning artifacts...'
+                            pomFileList = sh(script: 'find -name "pom.xml"', returnStdout: true)
+                            pomFileList = pomFileList.split('\n')
+
+                            def pomParent = readMavenPom file: "pom.xml"
+
+                            if (isDebug) {
+                                echo "DEBUG : ArtifactParent=" + pomParent.groupId +
+                                        ":" + pomParent.artifactId +
+                                        ":" + pomParent.version +
+                                        ":" + pomParent.packaging
+                            }
+
+                            for (j = 0; j < pomFileList.size(); j++) {
+                                def pomModule = readMavenPom file: pomFileList[j]
+
+                                if (isDebug) {
+                                    echo "DEBUG : Artifact[" + j +
+                                            "] = " + pomModule.groupId +
+                                            ":" + pomModule.artifactId +
+                                            ":" + pomModule.version +
+                                            ":" + pomModule.packaging
+                                }
+
+                                if (JOB_FOR == "WAS" && (pomModule.packaging == "EAR" || pomModule.packaging == "ear") ||
+                                        JOB_FOR == "Liferay" ||
+                                        JOB_FOR == "LivApp" && (pomModule.artifactId.contains("_conf") || pomModule.artifactId.contains("_soft"))) {
+                                    if (artifactsListToDeploy.length() != 0) {
+                                        artifactsListToDeploy += "/"
+                                    }
+
+                                    anArtifact = pomModule.artifactId + ":" +
+                                            (pomModule.version == null ? pomParent.version : pomModule.version)
+
+                                    artifactsListToDeploy += anArtifact
+
+                                    dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                                            projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                            "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0] +
+                                            "/" + "temp") {
+                                        withMaven(maven: 'default-maven',
+                                                jdk: 'default-jdk',
+                                                mavenSettingsConfig: 'GLOBAL_MVN_SETTINGS') {
+
+                                            echo "mvn org.apache.maven.plugins:maven-dependency-plugin:get -Dartifact=" +
+                                                    (pomModule.groupId == null ? pomParent.groupId : pomModule.groupId) +
+                                                    ":" + anArtifact + ":" +
+                                                    pomModule.packaging +
+                                                    " -DrepoUrl=https://cip-nexus-assurance.is.echonet/" +
+                                                    "repository/ALL_REPOSITORIES"
+
+                                            sh "mvn org.apache.maven.plugins:maven-dependency-plugin:get -Dartifact=" +
+                                                    (pomModule.groupId == null ? pomParent.groupId : pomModule.groupId) +
+                                                    ":" + anArtifact + ":" +
+                                                    pomModule.packaging +
+                                                    " -DrepoUrl=https://cip-nexus-assurance.is.echonet/" +
+                                                    "repository/ALL_REPOSITORIES"
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (isDebug) {
+                                echo "DEBUG : Artifact for DM found = " + artifactsListToDeploy
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube analysis') {
+            when {
+                expression {
+                    !noSonar &&
+                            JOB_PURPOSE != "CAST_ANALYSIS"
+                }
+            }
+            steps {
+                script {
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                                projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+
+                            withMaven(maven: 'default-maven',
+                                    jdk: 'default-jdk') {
+                                withSonarQubeEnv('default-sonar') {
+                                    sh "mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:3.3.0.603:sonar -Dsonar.scm.disabled=True $jdks $mvn_option"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Prepare project version for next SNAPSHOT (only for RELEASE or BUILD_ONLY with update snapshot version)') {
+            when {
+                expression {
+                    JOB_PURPOSE == "RELEASE" || (JOB_PURPOSE == "BUILD_ONLY" && !newSnapshotVersion.isEmpty())
+                }
+            }
+            steps {
+                script {
+                    for (i = 0; i < projectAndBranch.size(); i++) {
+                        dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                                projectAndBranch[i].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                                "/" + projectAndBranch[i].split('/')[projectAndBranch[i].split('/').size() - 1].split('@')[0]) {
+
+                            if (newSnapshotVersion.isEmpty()) {
+                                pom = readMavenPom file: "pom.xml"
+
+                                // TODO try to generate new snapshot version with a groovy regex
+                                releaseVersionTab = (pom.version.tokenize("-")[0]).tokenize(".")
+
+                                newSnapshotVersion = (releaseVersionTab[0] != null &&
+                                        releaseVersionTab[0].isNumber() ? releaseVersionTab[0].toInteger() : 1)
+
+                                for (releaseVersionDigit = 1;
+                                     releaseVersionDigit <= releaseVersionTab.size() - 1 || releaseVersionDigit < 3;
+                                     releaseVersionDigit++) {
+                                    if (releaseVersionDigit < releaseVersionTab.size()) {
+                                        newSnapshotVersion = newSnapshotVersion +
+                                                "." +
+                                                (releaseVersionTab[releaseVersionDigit] != null &&
+                                                        releaseVersionTab[releaseVersionDigit].isNumber() ?
+                                                        releaseVersionTab[releaseVersionDigit].toInteger() : 0)
+                                    } else {
+                                        newSnapshotVersion = newSnapshotVersion + ".0"
+                                    }
+                                }
+
+                                if (releaseVersionTab.size() > 2) {
+                                    def newSnapshotVersionTab = newSnapshotVersion.tokenize(".")
+                                    newSnapshotVersion = newSnapshotVersion.substring(0, newSnapshotVersion.lastIndexOf(".")) +
+                                            "." +
+                                            (newSnapshotVersionTab[newSnapshotVersionTab.size() - 1].isNumber() ?
+                                                    newSnapshotVersionTab[newSnapshotVersionTab.size() - 1].toInteger() + 1 : 0)
+                                }
+                                newSnapshotVersion = newSnapshotVersion + "-0-SNAPSHOT"
+                            }
+
+                            withMaven(maven: 'default-maven',
+                                    jdk: 'default-jdk') {
+                                sh "mvn org.codehaus.mojo:versions-maven-plugin:2.3:set -DnewVersion=" + newSnapshotVersion
+                                sh "mvn org.codehaus.mojo:versions-maven-plugin:2.3:commit"
+                            }
+
+                            try {
+                                sh 'find . -name "pom.xml" | xargs git add'
+                            } catch (err) {
+                                // Nothing to do
+                            }
+
+                            sh 'git status'
+                            sh "git commit -m 'Jenkins CI : Maven version upgrade to next SNAPSHOT => $newSnapshotVersion " +
+                                    (isAutoBuild ? "(build auto)" : "") +
+                                    "'" + " --author \"" + creatorName + "\""
+
+                            sh 'git push'
+                            sh "git push origin $releaseVersion "
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('CAST analysis (only for CAST job configuration)') {
+            when {
+                expression {
+                    JOB_PURPOSE == "CAST_ANALYSIS"
+                }
+            }
+            steps {
+                script {
+                    echo "stage for CAST has been moved to an other script to avoid Jenkins 2.56 limitation on script size"
+                }
+            }
+        }
+
+        stage('DeliveryManager call') {
+            when {
+                expression {
+                    JOB_PURPOSE != "CAST_ANALYSIS" &&
+                            DELIVERY_MANAGER != dontCallDM
+                }
+            }
+            steps {
+                script {
+                    // need to run mvn cmd on a pom.xml
+                    dir("${env.WORKSPACE}/" + projectAndBranch[0].split('/')[0] + "/" +
+                            projectAndBranch[0].replace("@", charAtReplacement).replace("/", charSlashReplacement) +
+                            "/" + projectAndBranch[0].split('/')[projectAndBranch[0].split('/').size() - 1].split('@')[0]) {
+                        //noinspection GroovyAssignabilityCheck
+                        withCredentials([[$class          : 'UsernamePasswordMultiBinding',
+                                          credentialsId   : 'DELIVERY_MANAGER_MAVEN_PLUGIN_ACCESS',
+                                          usernameVariable: 'DELIVERY_MANAGER_MAVEN_PLUGIN_USERNAME',
+                                          passwordVariable: 'DELIVERY_MANAGER_MAVEN_PLUGIN_PASSWORD']]) {
+
+                            withMaven(maven: 'default-maven',
+                                    jdk: 'default-jdk') {
+
+                                def dmCallTimeout = 0
+                                try {
+                                    dmCallTimeout = (!DM_TIMEOUT.isEmpty()) ? DM_TIMEOUT : dmCallTimeout
+                                    echo "DM_TIMEOUT is defined to " + dmCallTimeout
+                                } catch (err) {
+                                    if (isDebug) {
+                                        echo "DM_TIMEOUT is not defined"
+                                    }
+                                }
+
+                                // replace echo by sh or vice versa to activate/inactivate mvn create-ara-liferay-delivery
+                                // com.bnppa.ic.plugins.mod:delivery-manager-rest-maven-plugin:1.6:create-ara-liferay-delivery for app delivery
+                                sh "mvn com.bnppa.ic.plugins.mod:delivery-manager-rest-maven-plugin:1.0.7-0:create-ara-delivery -U " +
+                                        "-DdeliveryManagerUrl=\"${DELIVERY_MANAGER_URL}\" " +
+                                        "-Dlogin=\"$DELIVERY_MANAGER_MAVEN_PLUGIN_USERNAME\" " +
+                                        "-Dpassword=\"$DELIVERY_MANAGER_MAVEN_PLUGIN_PASSWORD\" " +
+                                        "-DcreatorUid=\"" + creatorUid + "\" " +
+                                        "-Denv=\"" + environnement + "\" " +
+                                        "-DenvConf=\"" + envConf + "\" " +
+                                        "-Dwis=\"" + wisList + "\" " +
+                                        "-Dproject=\"" + wisProject + "\" " +
+                                        "-Dartifacts=\"" + artifactsListToDeploy + "\" " +
+                                        "-Ddeploy=" + (DELIVERY_MANAGER == callDMWithDeploy) + " " +
+                                        "-Dtimeout=" + dmCallTimeout + "  " + mvn_option
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Clean up the workspace'
+            deleteDir()
+        }
+    }
+}
